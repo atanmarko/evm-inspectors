@@ -6,12 +6,10 @@ use crate::tracing::{
     TracingInspectorConfig,
 };
 use alloy_primitives::{Address, Bytes, B256, U256};
-use alloy_rpc_trace_types::geth::{
-    AccountChangeKind, AccountState, CallConfig, CallFrame, DefaultFrame, DiffMode,
-    GethDefaultTracingOptions, PreStateConfig, PreStateFrame, PreStateMode, StructLog,
-};
+use alloy_rpc_trace_types::geth::{AccountChangeKind, AccountState, CallConfig, CallFrame, DefaultFrame, DiffMode, GethDefaultTracingOptions, PreStateConfig, PreStateFrame, PreStateMode, StructLog, ZeroTracerConfig, ZeroFrame};
 use revm::{db::DatabaseRef, primitives::ResultAndState};
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use alloy_rpc_trace_types::geth::zero_tracer::ZeroTraceData;
 
 /// A type for creating geth style traces
 #[derive(Clone, Debug)]
@@ -256,6 +254,45 @@ impl GethTraceBuilder {
             self.diff_traces(&mut state_diff.pre, &mut state_diff.post, account_change_kinds);
             Ok(PreStateFrame::Diff(state_diff))
         }
+    }
+
+    ///  Returns the accounts necessary for transaction execution.
+    ///
+    /// The prestate mode returns the accounts necessary to execute a given transaction.
+    /// diff_mode returns the differences between the transaction's pre and post-state.
+    ///
+    /// * `state` - The state post-transaction execution.
+    /// * `diff_mode` - if prestate is in diff or prestate mode.
+    /// * `db` - The database to fetch state pre-transaction execution.
+    pub fn geth_zero_traces<DB: DatabaseRef>(
+        &self,
+       result_and_state: &ResultAndState,
+        _zero_tracer_config: ZeroTracerConfig,
+        db: DB,
+    ) -> Result<ZeroFrame, DB::Error> {
+
+        let mut zero_frame = ZeroFrame::default();
+        // we only want changed accounts for things like balance changes etc
+        for (addr, changed_acc) in result_and_state.state.iter() {
+            let db_acc = db.basic_ref(*addr)?.unwrap_or_default();
+            let code = load_account_code(&db, &db_acc);
+            let mut acc_state =
+                AccountState::from_account_info(db_acc.nonce, db_acc.balance, code);
+
+            // insert the original value of all modified storage slots
+            for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed())
+            {
+                // empty slots are excluded
+                if slot.previous_or_original_value.is_zero() {
+                    continue;
+                }
+                acc_state.storage.insert((*key).into(), slot.previous_or_original_value.into());
+            }
+
+            zero_frame.traces.insert(*addr, ZeroTraceData::default());
+        }
+
+        Ok(zero_frame)
     }
 
     /// Returns the difference between the pre and post state of the transaction depending on the

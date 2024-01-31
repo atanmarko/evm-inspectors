@@ -24,6 +24,8 @@ mod builder;
 mod config;
 mod fourbyte;
 mod opcount;
+mod zero;
+
 pub mod types;
 mod utils;
 pub use arena::CallTraceArena;
