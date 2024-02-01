@@ -6,10 +6,14 @@ use crate::tracing::{
     TracingInspectorConfig,
 };
 use alloy_primitives::{Address, Bytes, B256, U256};
-use alloy_rpc_trace_types::geth::{AccountChangeKind, AccountState, CallConfig, CallFrame, DefaultFrame, DiffMode, GethDefaultTracingOptions, PreStateConfig, PreStateFrame, PreStateMode, StructLog, ZeroTracerConfig, ZeroFrame};
+use alloy_rpc_trace_types::geth::{
+    zero_tracer::{ZeroTraceData, ZeroTraceDataAccount, ZeroTraceDataContract},
+    AccountChangeKind, AccountState, CallConfig, CallFrame, DefaultFrame, DiffMode,
+    GethDefaultTracingOptions, PreStateConfig, PreStateFrame, PreStateMode, StructLog, ZeroFrame,
+    ZeroTracerConfig,
+};
 use revm::{db::DatabaseRef, primitives::ResultAndState};
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use alloy_rpc_trace_types::geth::zero_tracer::ZeroTraceData;
 
 /// A type for creating geth style traces
 #[derive(Clone, Debug)]
@@ -23,6 +27,7 @@ pub struct GethTraceBuilder {
 impl GethTraceBuilder {
     /// Returns a new instance of the builder
     pub fn new(nodes: Vec<CallTraceNode>, _config: TracingInspectorConfig) -> Self {
+        println!(">>>>>>>>>>>>>>> TRACER CONFIG: {:?}", _config);
         Self { nodes, _config }
     }
 
@@ -35,6 +40,7 @@ impl GethTraceBuilder {
         storage: &mut HashMap<Address, BTreeMap<B256, B256>>,
         struct_logs: &mut Vec<StructLog>,
     ) {
+        println!(">>>>>>>>>>>>>>> GethDefaultTracingOptions: {:?}", opts);
         // A stack with all the steps of the trace and all its children's steps.
         // This is used to process the steps in the order they appear in the transactions.
         // Steps are grouped by their Call Trace Node, in order to process them all in the order
@@ -266,31 +272,47 @@ impl GethTraceBuilder {
     /// * `db` - The database to fetch state pre-transaction execution.
     pub fn geth_zero_traces<DB: DatabaseRef>(
         &self,
-       result_and_state: &ResultAndState,
+        result_and_state: &ResultAndState,
         _zero_tracer_config: ZeroTracerConfig,
         db: DB,
     ) -> Result<ZeroFrame, DB::Error> {
-
         let mut zero_frame = ZeroFrame::default();
         // we only want changed accounts for things like balance changes etc
         for (addr, changed_acc) in result_and_state.state.iter() {
             let db_acc = db.basic_ref(*addr)?.unwrap_or_default();
             let code = load_account_code(&db, &db_acc);
-            let mut acc_state =
-                AccountState::from_account_info(db_acc.nonce, db_acc.balance, code);
-
-            // insert the original value of all modified storage slots
-            for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed())
-            {
-                // empty slots are excluded
-                if slot.previous_or_original_value.is_zero() {
-                    continue;
+            let acc_state = AccountState::from_account_info(db_acc.nonce, db_acc.balance, code);
+            if let Some(code) = &acc_state.code {
+                if code.len() == 0 {
+                    let mut data = ZeroTraceDataAccount::default();
+                    // External account
+                    data.balance = db_acc.balance;
+                    data.nonce = U256::from(db_acc.nonce);
+                    zero_frame.traces.insert(*addr, ZeroTraceData::Account(data));
+                } else {
+                    // Contract account
+                    let mut data = ZeroTraceDataContract::default();
+                    for (key, slot) in
+                        changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed())
+                    {
+                        // // empty slots are excluded
+                        // if slot.previous_or_original_value.is_zero() {
+                        //     continue;
+                        // }
+                        // acc_state.storage.insert((*key).into(),
+                        // slot.previous_or_original_value.into());
+                        data.storage_written.insert(
+                            hex::encode(&key.to_be_bytes_vec()),
+                            hex::encode(&slot.present_value.to_be_bytes_vec()),
+                        );
+                    }
+                    zero_frame.traces.insert(*addr, ZeroTraceData::Contract(data));
                 }
-                acc_state.storage.insert((*key).into(), slot.previous_or_original_value.into());
             }
-
-            zero_frame.traces.insert(*addr, ZeroTraceData::default());
         }
+
+        // DEBUG
+        println!("nodes: {:?}", self.nodes);
 
         Ok(zero_frame)
     }

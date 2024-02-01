@@ -35,6 +35,7 @@ boa_gc = { version = "0.17", optional = true }
 serde = { version = "1", features = ["derive"] }
 thiserror = { version = "1", optional = true }
 serde_json = { version = "1", optional = true }
+hex = "0.4"
 
 [features]
 default = []
